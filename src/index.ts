@@ -7,16 +7,12 @@ import { authorize } from "./auth.js";
 import { gmail as googleGmail } from "@googleapis/gmail";
 import { extractHeaders, extractBody, buildRawMessage } from "./gmail.js";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const credentialsPath = process.env.GOOGLE_OAUTH_CREDENTIALS;
-const tokensPath = process.env.GOOGLE_OAUTH_TOKENS;
-
 if (!credentialsPath) {
   console.error("GOOGLE_OAUTH_CREDENTIALS 環境変数を設定してください");
-  process.exit(1);
-}
-if (!tokensPath) {
-  console.error("GOOGLE_OAUTH_TOKENS 環境変数を設定してください");
   process.exit(1);
 }
 if (!existsSync(credentialsPath)) {
@@ -24,13 +20,23 @@ if (!existsSync(credentialsPath)) {
   process.exit(1);
 }
 
-// OAuth2認証
-const auth = await authorize(credentialsPath, tokensPath);
-const gmail = googleGmail({ version: "v1", auth });
+const resolvedCredentialsPath: string = credentialsPath;
+const resolvedTokensPath: string = process.env.GOOGLE_OAUTH_TOKENS ?? join(homedir(), ".config", "gmail-mcp", "tokens.json");
+
+// lazy auth: ツール呼び出し時に初めて認証する
+let gmailClient: ReturnType<typeof googleGmail> | null = null;
+
+async function getGmail() {
+  if (!gmailClient) {
+    const auth = await authorize(resolvedCredentialsPath, resolvedTokensPath);
+    gmailClient = googleGmail({ version: "v1", auth });
+  }
+  return gmailClient;
+}
 
 const server = new McpServer({
   name: "gmail-mcp",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 // 1. search-messages
@@ -44,6 +50,7 @@ server.registerTool(
     },
   },
   async ({ query, maxResults }) => {
+    const gmail = await getGmail();
     const res = await gmail.users.messages.list({
       userId: "me",
       q: query,
@@ -104,6 +111,7 @@ server.registerTool(
     },
   },
   async ({ messageIds }) => {
+    const gmail = await getGmail();
     const details = await Promise.all(
       messageIds.map((id) =>
         gmail.users.messages.get({
@@ -149,6 +157,7 @@ server.registerTool(
     },
   },
   async ({ threadIds }) => {
+    const gmail = await getGmail();
     const threads = await Promise.all(
       threadIds.map((id) =>
         gmail.users.threads.get({
@@ -204,6 +213,7 @@ server.registerTool(
     },
   },
   async ({ to, cc, subject, body, threadId, inReplyToMessageId }) => {
+    const gmail = await getGmail();
     // 返信時のヘッダー構築
     let inReplyTo: string | undefined;
     let references: string | undefined;
@@ -262,6 +272,7 @@ server.registerTool(
     },
   },
   async ({ messageIds, addLabelIds, removeLabelIds }) => {
+    const gmail = await getGmail();
     await gmail.users.messages.batchModify({
       userId: "me",
       requestBody: {
@@ -288,6 +299,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
+    const gmail = await getGmail();
     const res = await gmail.users.labels.list({ userId: "me" });
     const labels = (res.data.labels ?? []).map((label) => ({
       id: label.id ?? "",
