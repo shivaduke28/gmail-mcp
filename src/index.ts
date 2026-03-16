@@ -5,7 +5,7 @@ import { z } from "zod";
 import { encode } from "@toon-format/toon";
 import { authorize } from "./auth.js";
 import { gmail as googleGmail } from "@googleapis/gmail";
-import { extractHeaders, extractBody, buildRawMessage } from "./gmail.js";
+import { extractHeaders, extractBody, extractHtmlBody, buildRawMessage } from "./gmail.js";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -207,12 +207,13 @@ server.registerTool(
       to: z.array(z.string()).describe("宛先メールアドレスの配列"),
       cc: z.array(z.string()).optional().default([]).describe("CCメールアドレスの配列"),
       subject: z.string().describe("件名"),
-      body: z.string().describe("本文"),
+      body: z.string().describe("本文（プレーンテキスト）"),
+      htmlBody: z.string().optional().describe("HTML本文（指定時はmultipart/alternativeで送信。返信時は引用付きHTMLを含める）"),
       threadId: z.string().optional().describe("返信先スレッドID（返信時に指定）"),
       inReplyToMessageId: z.string().optional().describe("返信先メッセージID（返信時に指定。Referencesヘッダー構築用）"),
     },
   },
-  async ({ to, cc, subject, body, threadId, inReplyToMessageId }) => {
+  async ({ to, cc, subject, body, htmlBody, threadId, inReplyToMessageId }) => {
     const gmail = await getGmail();
     // 返信時のヘッダー構築
     let inReplyTo: string | undefined;
@@ -239,7 +240,7 @@ server.registerTool(
       }
     }
 
-    const raw = buildRawMessage(to, cc, subject, body, threadId, inReplyTo, references);
+    const raw = buildRawMessage(to, cc, subject, body, threadId, inReplyTo, references, htmlBody);
 
     const draft = await gmail.users.drafts.create({
       userId: "me",

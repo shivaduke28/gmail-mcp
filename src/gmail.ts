@@ -52,6 +52,30 @@ export function extractBody(
   return "";
 }
 
+export function extractHtmlBody(
+  payload: gmail_v1.Schema$MessagePart | undefined
+): string {
+  if (!payload) return "";
+
+  if (payload.mimeType === "text/html" && payload.body?.data) {
+    return decodeBase64Url(payload.body.data);
+  }
+
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      if (part.mimeType === "text/html" && part.body?.data) {
+        return decodeBase64Url(part.body.data);
+      }
+    }
+    for (const part of payload.parts) {
+      const html = extractHtmlBody(part);
+      if (html) return html;
+    }
+  }
+
+  return "";
+}
+
 function decodeBase64Url(data: string): string {
   const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
   return Buffer.from(base64, "base64").toString("utf-8");
@@ -72,7 +96,8 @@ export function buildRawMessage(
   body: string,
   threadId?: string,
   inReplyTo?: string,
-  references?: string
+  references?: string,
+  htmlBody?: string
 ): string {
   const lines: string[] = [];
   lines.push(`To: ${to.join(", ")}`);
@@ -81,8 +106,6 @@ export function buildRawMessage(
   }
   lines.push(`Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`);
   lines.push("MIME-Version: 1.0");
-  lines.push("Content-Type: text/plain; charset=UTF-8");
-  lines.push("Content-Transfer-Encoding: base64");
 
   if (inReplyTo) {
     lines.push(`In-Reply-To: ${inReplyTo}`);
@@ -91,8 +114,27 @@ export function buildRawMessage(
     lines.push(`References: ${references}`);
   }
 
-  lines.push("");
-  lines.push(Buffer.from(body).toString("base64"));
+  if (htmlBody) {
+    const boundary = `boundary_${Date.now()}`;
+    lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    lines.push("");
+    lines.push(`--${boundary}`);
+    lines.push("Content-Type: text/plain; charset=UTF-8");
+    lines.push("Content-Transfer-Encoding: base64");
+    lines.push("");
+    lines.push(Buffer.from(body).toString("base64"));
+    lines.push(`--${boundary}`);
+    lines.push("Content-Type: text/html; charset=UTF-8");
+    lines.push("Content-Transfer-Encoding: base64");
+    lines.push("");
+    lines.push(Buffer.from(htmlBody).toString("base64"));
+    lines.push(`--${boundary}--`);
+  } else {
+    lines.push("Content-Type: text/plain; charset=UTF-8");
+    lines.push("Content-Transfer-Encoding: base64");
+    lines.push("");
+    lines.push(Buffer.from(body).toString("base64"));
+  }
 
   return encodeBase64Url(lines.join("\r\n"));
 }
