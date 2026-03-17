@@ -5,7 +5,7 @@ import { z } from "zod";
 import { encode } from "@toon-format/toon";
 import { authorize } from "./auth.js";
 import { gmail as googleGmail } from "@googleapis/gmail";
-import { extractHeaders, extractBody, extractHtmlBody, buildRawMessage } from "./gmail.js";
+import { extractHeaders, extractBody, extractHtmlBody, stripHtml, buildRawMessage } from "./gmail.js";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -124,7 +124,11 @@ server.registerTool(
 
     const messages = details.map((detail) => {
       const headers = extractHeaders(detail.data.payload?.headers);
-      const body = extractBody(detail.data.payload ?? undefined);
+      let body = extractBody(detail.data.payload ?? undefined);
+      const htmlBody = extractHtmlBody(detail.data.payload ?? undefined);
+      if (!body && htmlBody) {
+        body = stripHtml(htmlBody);
+      }
       return {
         id: detail.data.id ?? "",
         threadId: detail.data.threadId ?? "",
@@ -135,6 +139,7 @@ server.registerTool(
         cc: headers.cc,
         subject: headers.subject,
         body,
+        htmlBody,
       };
     });
 
@@ -171,7 +176,11 @@ server.registerTool(
     const result = threads.map((thread) => {
       const messages = (thread.data.messages ?? []).map((msg) => {
         const headers = extractHeaders(msg.payload?.headers);
-        const body = extractBody(msg.payload ?? undefined);
+        let body = extractBody(msg.payload ?? undefined);
+        const htmlBody = extractHtmlBody(msg.payload ?? undefined);
+        if (!body && htmlBody) {
+          body = stripHtml(htmlBody);
+        }
         return {
           id: msg.id ?? "",
           date: headers.date,
@@ -181,6 +190,7 @@ server.registerTool(
           subject: headers.subject,
           labels: (msg.labelIds ?? []).join(", "),
           body,
+          htmlBody,
         };
       });
       return {

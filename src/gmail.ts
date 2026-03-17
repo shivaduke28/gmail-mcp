@@ -76,6 +76,31 @@ export function extractHtmlBody(
   return "";
 }
 
+export function stripHtml(html: string): string {
+  return html
+    // Remove style and script blocks entirely
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+    // Convert <br>, <p>, <div>, <tr>, <li> to newlines
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|tr|h[1-6])>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "- ")
+    // Strip remaining tags
+    .replace(/<[^>]+>/g, "")
+    // Decode common HTML entities
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)))
+    // Collapse multiple blank lines
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function decodeBase64Url(data: string): string {
   const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
   return Buffer.from(base64, "base64").toString("utf-8");
