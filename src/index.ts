@@ -5,8 +5,8 @@ import { z } from "zod";
 import { encode } from "@toon-format/toon";
 import { authorize } from "./auth.js";
 import { gmail as googleGmail } from "@googleapis/gmail";
-import { extractHeaders, extractBody, buildRawMessage } from "./gmail.js";
-import { existsSync } from "node:fs";
+import { extractHeaders, extractBody, extractHtmlBody, stripHtml, buildRawMessage, extractAttachments, getAttachment } from "./gmail.js";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -124,7 +124,12 @@ server.registerTool(
 
     const messages = details.map((detail) => {
       const headers = extractHeaders(detail.data.payload?.headers);
-      const body = extractBody(detail.data.payload ?? undefined);
+      let body = extractBody(detail.data.payload ?? undefined);
+      const htmlBody = extractHtmlBody(detail.data.payload ?? undefined);
+      if (!body && htmlBody) {
+        body = stripHtml(htmlBody);
+      }
+      const attachments = extractAttachments(detail.data.payload ?? undefined);
       return {
         id: detail.data.id ?? "",
         threadId: detail.data.threadId ?? "",
@@ -135,6 +140,8 @@ server.registerTool(
         cc: headers.cc,
         subject: headers.subject,
         body,
+        htmlBody,
+        attachments,
       };
     });
 
@@ -171,7 +178,12 @@ server.registerTool(
     const result = threads.map((thread) => {
       const messages = (thread.data.messages ?? []).map((msg) => {
         const headers = extractHeaders(msg.payload?.headers);
-        const body = extractBody(msg.payload ?? undefined);
+        let body = extractBody(msg.payload ?? undefined);
+        const htmlBody = extractHtmlBody(msg.payload ?? undefined);
+        if (!body && htmlBody) {
+          body = stripHtml(htmlBody);
+        }
+        const attachments = extractAttachments(msg.payload ?? undefined);
         return {
           id: msg.id ?? "",
           date: headers.date,
@@ -181,6 +193,8 @@ server.registerTool(
           subject: headers.subject,
           labels: (msg.labelIds ?? []).join(", "),
           body,
+          htmlBody,
+          attachments,
         };
       });
       return {
@@ -207,12 +221,13 @@ server.registerTool(
       to: z.array(z.string()).describe("宛先メールアドレスの配列"),
       cc: z.array(z.string()).optional().default([]).describe("CCメールアドレスの配列"),
       subject: z.string().describe("件名"),
-      body: z.string().describe("本文"),
+      body: z.string().describe("本文（プレーンテキスト）"),
+      htmlBody: z.string().optional().describe("HTML本文（指定時はmultipart/alternativeで送信。返信時は引用付きHTMLを含める）"),
       threadId: z.string().optional().describe("返信先スレッドID（返信時に指定）"),
       inReplyToMessageId: z.string().optional().describe("返信先メッセージID（返信時に指定。Referencesヘッダー構築用）"),
     },
   },
-  async ({ to, cc, subject, body, threadId, inReplyToMessageId }) => {
+  async ({ to, cc, subject, body, htmlBody, threadId, inReplyToMessageId }) => {
     const gmail = await getGmail();
     // 返信時のヘッダー構築
     let inReplyTo: string | undefined;
@@ -239,7 +254,7 @@ server.registerTool(
       }
     }
 
-    const raw = buildRawMessage(to, cc, subject, body, threadId, inReplyTo, references);
+    const raw = buildRawMessage(to, cc, subject, body, threadId, inReplyTo, references, htmlBody);
 
     const draft = await gmail.users.drafts.create({
       userId: "me",
@@ -311,6 +326,44 @@ server.registerTool(
       content: [{
         type: "text",
         text: encode({ labels }),
+      }],
+    };
+  }
+);
+
+// 7. save-attachment
+server.registerTool(
+  "save-attachment",
+  {
+    description: "Download an email attachment and save it to disk.",
+    inputSchema: {
+      messageId: z.string().describe("The message ID containing the attachment"),
+      attachmentId: z.string().describe("The attachment ID from get-messages/get-threads"),
+      filename: z.string().describe("The original filename of the attachment"),
+      savePath: z.string().describe("Absolute path to directory where the file will be saved"),
+    },
+  },
+  async ({ messageId, attachmentId, filename, savePath }) => {
+    const gmail = await getGmail();
+    const data = await getAttachment(gmail, messageId, attachmentId);
+
+    if (!data) {
+      return {
+        content: [{ type: "text", text: "Attachment data is empty." }],
+      };
+    }
+
+    // Ensure save directory exists
+    mkdirSync(savePath, { recursive: true });
+
+    const filePath = join(savePath, filename);
+    const buffer = Buffer.from(data, "base64url");
+    writeFileSync(filePath, buffer);
+
+    return {
+      content: [{
+        type: "text",
+        text: `Attachment saved to ${filePath} (${buffer.length} bytes)`,
       }],
     };
   }

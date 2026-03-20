@@ -1,5 +1,51 @@
 import type { gmail_v1 } from "@googleapis/gmail";
 
+export interface AttachmentMeta {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
+export function extractAttachments(
+  payload: gmail_v1.Schema$MessagePart | undefined
+): AttachmentMeta[] {
+  const attachments: AttachmentMeta[] = [];
+  if (!payload) return attachments;
+
+  function walk(part: gmail_v1.Schema$MessagePart) {
+    if (part.filename && part.body?.attachmentId) {
+      attachments.push({
+        attachmentId: part.body.attachmentId,
+        filename: part.filename,
+        mimeType: part.mimeType ?? "application/octet-stream",
+        size: part.body.size ?? 0,
+      });
+    }
+    if (part.parts) {
+      for (const child of part.parts) {
+        walk(child);
+      }
+    }
+  }
+
+  walk(payload);
+  return attachments;
+}
+
+export async function getAttachment(
+  gmail: gmail_v1.Gmail,
+  messageId: string,
+  attachmentId: string
+): Promise<string> {
+  const res = await gmail.users.messages.attachments.get({
+    userId: "me",
+    messageId,
+    id: attachmentId,
+  });
+  return res.data.data ?? "";
+}
+
 export interface MessageHeaders {
   from: string;
   to: string;
@@ -52,6 +98,55 @@ export function extractBody(
   return "";
 }
 
+export function extractHtmlBody(
+  payload: gmail_v1.Schema$MessagePart | undefined
+): string {
+  if (!payload) return "";
+
+  if (payload.mimeType === "text/html" && payload.body?.data) {
+    return decodeBase64Url(payload.body.data);
+  }
+
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      if (part.mimeType === "text/html" && part.body?.data) {
+        return decodeBase64Url(part.body.data);
+      }
+    }
+    for (const part of payload.parts) {
+      const html = extractHtmlBody(part);
+      if (html) return html;
+    }
+  }
+
+  return "";
+}
+
+export function stripHtml(html: string): string {
+  return html
+    // Remove style and script blocks entirely
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+    // Convert <br>, <p>, <div>, <tr>, <li> to newlines
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|tr|h[1-6])>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "- ")
+    // Strip remaining tags
+    .replace(/<[^>]+>/g, "")
+    // Decode common HTML entities
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)))
+    // Collapse multiple blank lines
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function decodeBase64Url(data: string): string {
   const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
   return Buffer.from(base64, "base64").toString("utf-8");
@@ -72,7 +167,8 @@ export function buildRawMessage(
   body: string,
   threadId?: string,
   inReplyTo?: string,
-  references?: string
+  references?: string,
+  htmlBody?: string
 ): string {
   const lines: string[] = [];
   lines.push(`To: ${to.join(", ")}`);
@@ -81,8 +177,6 @@ export function buildRawMessage(
   }
   lines.push(`Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`);
   lines.push("MIME-Version: 1.0");
-  lines.push("Content-Type: text/plain; charset=UTF-8");
-  lines.push("Content-Transfer-Encoding: base64");
 
   if (inReplyTo) {
     lines.push(`In-Reply-To: ${inReplyTo}`);
@@ -91,8 +185,27 @@ export function buildRawMessage(
     lines.push(`References: ${references}`);
   }
 
-  lines.push("");
-  lines.push(Buffer.from(body).toString("base64"));
+  if (htmlBody) {
+    const boundary = `boundary_${Date.now()}`;
+    lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    lines.push("");
+    lines.push(`--${boundary}`);
+    lines.push("Content-Type: text/plain; charset=UTF-8");
+    lines.push("Content-Transfer-Encoding: base64");
+    lines.push("");
+    lines.push(Buffer.from(body).toString("base64"));
+    lines.push(`--${boundary}`);
+    lines.push("Content-Type: text/html; charset=UTF-8");
+    lines.push("Content-Transfer-Encoding: base64");
+    lines.push("");
+    lines.push(Buffer.from(htmlBody).toString("base64"));
+    lines.push(`--${boundary}--`);
+  } else {
+    lines.push("Content-Type: text/plain; charset=UTF-8");
+    lines.push("Content-Transfer-Encoding: base64");
+    lines.push("");
+    lines.push(Buffer.from(body).toString("base64"));
+  }
 
   return encodeBase64Url(lines.join("\r\n"));
 }
